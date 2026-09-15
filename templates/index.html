@@ -17,6 +17,7 @@
 </head>
 <body>
     <h1>📸 My Photos</h1>
+    <p>{{ storage.used_gb }} GB used of {{ storage.total_gb }} GB ({{ storage.percent }}%)</p>
     <form id="upload-form" enctype="multipart/form-data">
         <input type="file" id="file-input" name="files" multiple accept="image/*,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2" required><br><br>
         <button type="submit" id="upload-btn">Upload</button>

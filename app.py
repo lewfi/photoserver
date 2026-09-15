@@ -34,7 +34,13 @@ app.mount("/files", StaticFiles(directory=PHOTOS_DIR), name="files")
 @app.get("/", response_class=HTMLResponse)
 def gallery(request: Request, user: str = Depends(verify_credentials)):
     files = [p.name for p in PHOTOS_DIR.iterdir() if p.is_file()]
-    return templates.TemplateResponse(request, "index.html", {"files": files})
+    total, used, free = shutil.disk_usage(PHOTOS_DIR)
+    storage = {
+        "used_gb": round(used / (1024**3), 1),
+        "total_gb": round(total / (1024**3), 1),
+        "percent": round(used / total * 100, 1),
+    }
+    return templates.TemplateResponse(request, "index.html", {"files": files, "storage": storage})
 
 @app.post("/upload")
 def upload(
