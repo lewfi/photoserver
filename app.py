@@ -9,21 +9,14 @@ from fastapi.templating import Jinja2Templates
 PHOTOS_DIR = Path("/mnt/photos")
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
-app.mount("/files", StaticFiles(directory=PHOTOS_DIR), names="files")
+app.mount("/files", StaticFiles(directory=PHOTOS_DIR), name="files")
+
 
 @app.get("/", response_class=HTMLResponse)
-def home():
-    return """
-    <html>
-    <body>
-      <h1>Upload a photo</h1>
-      <form action="/upload" method="post" enctype="multipart/form-data">
-        <input type="file" name="file">
-        <button type="submit">Upload</button>
-      </form>
-    </body>
-    </html>
-    """
+def gallery(request: Request):
+    files = [p.name for p in PHOTOS_DIR.iterdir() if p.is_file()]
+    return templates.TemplateResponse("index.html", {"request": request, "files": files})
+
 
 @app.post("/upload")
 def upload(files: list[UploadFile] = File(...)):
