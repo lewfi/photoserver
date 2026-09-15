@@ -39,6 +39,10 @@ def gallery(request: Request, user: str = Depends(verify_credentials)):
 def upload(files: list[UploadFile] = File(...), user: str = Depends(verify_credentials)):
     for file in files:
         dest = PHOTOS_DIR / file.filename
+        stem, suffix, counter = dest.stem, dest.suffix, 1
+        while dest.exists():
+            dest = PHOTOS_DIR / f"{stem}_{counter}{suffix}"
+            counter += 1
         with open(dest, "wb") as f:
             shutil.copyfileobj(file.file, f)
     return HTMLResponse('<a href="/">Done — back to gallery</a>')
