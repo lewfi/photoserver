@@ -8,8 +8,12 @@
         body { font-family: -apple-system, sans-serif; background:#111; color:#eee; margin:0; padding:16px; }
         button { background:#0a84ff; color:#fff; border:none; padding:10px 16px; border-radius:8px; font-size:16px; }
         button:disabled { background:#555; }
-        .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap:8px; margin-top:16px; }
-        .grid img, .grid video { width:100%; height:120px; object-fit:cover; border-radius:6px; }
+        input[type=text] { padding:8px; border-radius:6px; border:none; }
+        a { color:#0a84ff; }
+        .albums { display:grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap:12px; margin-top:16px; }
+        .album { display:block; text-decoration:none; color:inherit; }
+        .album img { width:100%; height:120px; object-fit:cover; border-radius:6px; background:#333; }
+        .album-name { font-size:14px; margin-top:4px; }
         #progress-wrap { display:none; background:#333; border-radius:8px; margin-top:12px; overflow:hidden; }
         #progress-bar { height:20px; width:0%; background:#0a84ff; text-align:center; color:#fff; font-size:12px; line-height:20px; }
         #status { margin-top:8px; }
@@ -20,37 +24,30 @@
     <p>{{ storage.used_gb }} GB used of {{ storage.total_gb }} GB ({{ storage.percent }}%)</p>
 
     <form id="upload-form" enctype="multipart/form-data">
+        <input type="text" id="folder-input" name="folder" placeholder="Album name (optional, defaults to today)"><br><br>
         <input type="file" id="file-input" name="files" multiple accept="image/*,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2" required><br><br>
         <button type="submit" id="upload-btn">Upload</button>
     </form>
-    <div id="progress-wrap">
-        <div id="progress-bar">0%</div>
-    </div>
+    <div id="progress-wrap"><div id="progress-bar">0%</div></div>
     <div id="status"></div>
 
-    <div class="grid">
-        {% for f in files %}
-          <div>
-            {% if f.lower().endswith(('.mp4', '.mov')) %}
-              <video src="/files/{{ f }}" controls></video>
-            {% elif f.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2')) %}
-              <a href="/files/{{ f }}">{{ f }}</a>
-            {% elif f in thumbs %}
-              <a href="/files/{{ f }}"><img src="/thumbnails/{{ f }}" loading="lazy"></a>
+    <div class="albums">
+        {% for album in folders %}
+          <a class="album" href="/folder/{{ album.name }}">
+            {% if album.cover %}
+              <img src="/thumbnails/{{ album.cover }}" loading="lazy">
             {% else %}
-              <img src="/files/{{ f }}" loading="lazy">
+              <img src="">
             {% endif %}
-            <form action="/delete" method="post" onsubmit="return confirm('Delete {{ f }}?')">
-              <input type="hidden" name="filename" value="{{ f }}">
-              <button type="submit">Delete</button>
-            </form>
-          </div>
+            <div class="album-name">{{ album.name }} ({{ album.count }})</div>
+          </a>
         {% endfor %}
     </div>
 
     <script>
         const form = document.getElementById('upload-form');
         const fileInput = document.getElementById('file-input');
+        const folderInput = document.getElementById('folder-input');
         const uploadBtn = document.getElementById('upload-btn');
         const progressWrap = document.getElementById('progress-wrap');
         const progressBar = document.getElementById('progress-bar');
@@ -62,16 +59,15 @@
         async function sha256Hex(file) {
             const buffer = await file.arrayBuffer();
             const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
-            return Array.from(new Uint8Array(hashBuffer))
-                .map(b => b.toString(16).padStart(2, '0'))
-                .join('');
+            return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
         }
 
-        function uploadOneFile(file, hash) {
+        function uploadOneFile(file, hash, folder) {
             return new Promise((resolve) => {
                 const formData = new FormData();
                 formData.append('file', file);
                 formData.append('file_hash', hash);
+                formData.append('folder', folder);
 
                 const xhr = new XMLHttpRequest();
                 xhr.open('POST', '/upload');
@@ -85,39 +81,36 @@
                 });
 
                 xhr.onload = function () {
-                    if (xhr.status === 200) {
-                        const data = JSON.parse(xhr.responseText);
-                        resolve(data.status);
-                    } else {
-                        resolve('error');
-                    }
+                    if (xhr.status === 200) resolve(JSON.parse(xhr.responseText));
+                    else resolve({ status: 'error' });
                 };
-
-                xhr.onerror = function () { resolve('error'); };
+                xhr.onerror = function () { resolve({ status: 'error' }); };
                 xhr.send(formData);
             });
         }
 
-        async function uploadWithRetries(file, hash, index, total) {
+        async function uploadWithRetries(file, hash, folder, index, total) {
             for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
                 status.textContent = `File ${index + 1}/${total}: ${file.name}` + (attempt > 1 ? ` (retry ${attempt - 1})` : '');
-                const result = await uploadOneFile(file, hash);
-                if (result === 'ok') return true;
+                const result = await uploadOneFile(file, hash, folder);
+                if (result.status === 'ok') return result.folder;
                 if (attempt < MAX_RETRIES) {
                     status.textContent = `${file.name} failed — retrying in ${RETRY_DELAY_MS / 1000}s...`;
                     await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
                 }
             }
-            return false;
+            return null;
         }
 
         form.addEventListener('submit', async function (e) {
             e.preventDefault();
             const filesArray = Array.from(fileInput.files);
+            const folder = folderInput.value;
             uploadBtn.disabled = true;
             progressWrap.style.display = 'block';
 
             const failed = [];
+            let landedFolder = null;
 
             for (let i = 0; i < filesArray.length; i++) {
                 const file = filesArray[i];
@@ -125,17 +118,17 @@
                 progressBar.textContent = '0%';
                 status.textContent = `Verifying file ${i + 1}/${filesArray.length}: ${file.name}...`;
                 const hash = await sha256Hex(file);
-
-                const success = await uploadWithRetries(file, hash, i, filesArray.length);
-                if (!success) failed.push(file.name);
+                const resultFolder = await uploadWithRetries(file, hash, folder, i, filesArray.length);
+                if (resultFolder) landedFolder = resultFolder;
+                else failed.push(file.name);
             }
 
             uploadBtn.disabled = false;
-            if (failed.length === 0) {
-                status.textContent = `All ${filesArray.length} file(s) uploaded and verified. Refreshing...`;
-                setTimeout(() => location.reload(), 800);
+            if (failed.length === 0 && landedFolder) {
+                status.textContent = `All ${filesArray.length} file(s) uploaded. Opening album...`;
+                setTimeout(() => location.href = `/folder/${landedFolder}`, 800);
             } else {
-                status.textContent = `${failed.length} file(s) failed after ${MAX_RETRIES} attempts: ${failed.join(', ')}. Please retry these manually.`;
+                status.textContent = `${failed.length} file(s) failed after ${MAX_RETRIES} attempts: ${failed.join(', ')}.`;
             }
         });
     </script>
