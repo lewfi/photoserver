@@ -19,13 +19,19 @@
     </form>
     <div class="grid">
         {% for f in files %}
-        {% if f.lower().endswith(('.mp4', '.mov')) %}
-            <video src="/files/{{ f }}" controls></video>
-        {% elif f.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2')) %}
-            <a href="/files/{{ f }}">{{ f }}</a>
-        {% else %}
-            <img src="/files/{{ f }}" loading="lazy">
-        {% endif %}
+            <div>
+            {% if f.lower().endswith(('.mp4', '.mov')) %}
+                <video src="/files/{{ f }}" controls></video>
+            {% elif f.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2')) %}
+                <a href="/files/{{ f }}">{{ f }}</a>
+            {% else %}
+                <img src="/files/{{ f }}" loading="lazy">
+            {% endif %}
+            <form action="/delete" method="post" onsubmit="return confirm('Delete {{ f }}?')">
+                <input type="hidden" name="filename" value="{{ f }}">
+                <button type="submit">Delete</button>
+            </form>
+            </div>
         {% endfor %}
     </div>
 </body>

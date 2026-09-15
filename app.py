@@ -5,9 +5,9 @@ import shutil
 from dotenv import load_dotenv
 from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile, Request, Depends, HTTPException, status
+from fastapi import FastAPI, File, UploadFile, Request, Depends, HTTPException, status, Form
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -48,3 +48,13 @@ def upload(files: list[UploadFile] = File(...), user: str = Depends(verify_crede
         with open(dest, "wb") as f:
             shutil.copyfileobj(file.file, f)
     return HTMLResponse('<a href="/">Done — back to gallery</a>')
+
+@app.post("/delete")
+def delete(filename: str = Form(...), user: str = Depends(verify_credentials)):
+    safe_name = Path(filename).name
+    target = (PHOTOS_DIR / safe_name).resolve()
+    if not str(target).startswith(str(PHOTOS_DIR.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    if target.exists():
+        target.unlink()
+    return RedirectResponse(url="/", status_code=303)
