@@ -43,8 +43,7 @@
           </div>
         {% endfor %}
     </div>
-
-    <script>
+        <script>
         const form = document.getElementById('upload-form');
         const fileInput = document.getElementById('file-input');
         const uploadBtn = document.getElementById('upload-btn');
@@ -52,17 +51,32 @@
         const progressBar = document.getElementById('progress-bar');
         const status = document.getElementById('status');
 
-        form.addEventListener('submit', function (e) {
+        async function sha256Hex(file) {
+            const buffer = await file.arrayBuffer();
+            const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+            return Array.from(new Uint8Array(hashBuffer))
+                .map(b => b.toString(16).padStart(2, '0'))
+                .join('');
+        }
+
+        form.addEventListener('submit', async function (e) {
             e.preventDefault();
 
-            const formData = new FormData();
-            for (const file of fileInput.files) {
-                formData.append('files', file);
-            }
-
+            const filesArray = Array.from(fileInput.files);
             uploadBtn.disabled = true;
             progressWrap.style.display = 'block';
-            status.textContent = `Uploading ${fileInput.files.length} file(s)...`;
+            progressBar.style.width = '0%';
+            progressBar.textContent = '0%';
+            status.textContent = `Verifying ${filesArray.length} file(s)...`;
+
+            const formData = new FormData();
+            for (const file of filesArray) {
+                const hash = await sha256Hex(file);
+                formData.append('files', file);
+                formData.append('hashes', hash);
+            }
+
+            status.textContent = `Uploading ${filesArray.length} file(s)...`;
 
             const xhr = new XMLHttpRequest();
             xhr.open('POST', '/upload');
@@ -73,18 +87,24 @@
                     progressBar.style.width = percent + '%';
                     progressBar.textContent = percent + '%';
                     if (percent === 100) {
-                        status.textContent = 'Processing on server...';
+                        status.textContent = 'Verifying on server...';
                     }
                 }
             });
 
             xhr.onload = function () {
+                uploadBtn.disabled = false;
                 if (xhr.status === 200) {
-                    status.textContent = 'Done! Refreshing...';
-                    setTimeout(() => location.reload(), 600);
+                    const data = JSON.parse(xhr.responseText);
+                    const failed = data.results.filter(r => r.status === 'failed');
+                    if (failed.length === 0) {
+                        status.textContent = `All ${data.results.length} file(s) verified and saved. Refreshing...`;
+                        setTimeout(() => location.reload(), 800);
+                    } else {
+                        status.textContent = `${failed.length} file(s) failed verification: ${failed.map(f => f.filename).join(', ')}. Please retry these.`;
+                    }
                 } else {
                     status.textContent = `Upload failed (status ${xhr.status})`;
-                    uploadBtn.disabled = false;
                 }
             };
 

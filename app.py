@@ -1,6 +1,7 @@
 import os
 import secrets
 import shutil
+import hashlib
 
 from dotenv import load_dotenv
 from pathlib import Path
@@ -36,18 +37,35 @@ def gallery(request: Request, user: str = Depends(verify_credentials)):
     return templates.TemplateResponse(request, "index.html", {"files": files})
 
 @app.post("/upload")
-def upload(files: list[UploadFile] = File(...), user: str = Depends(verify_credentials)):
-    for file in files:
+def upload(
+    files: list[UploadFile] = File(...),
+    hashes: list[str] = Form(...),
+    user: str = Depends(verify_credentials),
+):
+    results = []
+    for file, expected_hash in zip(files, hashes):
         if not file.filename:
             continue
+
         dest = PHOTOS_DIR / file.filename
         stem, suffix, counter = dest.stem, dest.suffix, 1
         while dest.exists():
             dest = PHOTOS_DIR / f"{stem}_{counter}{suffix}"
             counter += 1
+
+        hasher = hashlib.sha256()
         with open(dest, "wb") as f:
-            shutil.copyfileobj(file.file, f)
-    return HTMLResponse('<a href="/">Done — back to gallery</a>')
+            while chunk := file.file.read(1024 * 1024):
+                hasher.update(chunk)
+                f.write(chunk)
+
+        if hasher.hexdigest() == expected_hash:
+            results.append({"filename": dest.name, "status": "ok"})
+        else:
+            dest.unlink()
+            results.append({"filename": file.filename, "status": "failed"})
+
+    return {"results": results}
 
 @app.post("/delete")
 def delete(filename: str = Form(...), user: str = Depends(verify_credentials)):
