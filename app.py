@@ -7,7 +7,7 @@ from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
-from PIL import Image
+from PIL import Image, ImageOps
 
 from fastapi import (
     FastAPI, File, UploadFile, Request, Depends,
@@ -63,6 +63,7 @@ def generate_thumbnail(path: Path, thumb_folder: Path):
         return
     try:
         img = Image.open(path)
+        img = ImageOps.exif_transpose(img)
         img.thumbnail((300, 300))
         if img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
