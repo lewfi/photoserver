@@ -38,34 +38,29 @@ def gallery(request: Request, user: str = Depends(verify_credentials)):
 
 @app.post("/upload")
 def upload(
-    files: list[UploadFile] = File(...),
-    hashes: list[str] = Form(...),
+    file: UploadFile = File(...),
+    file_hash: str = Form(...),
     user: str = Depends(verify_credentials),
 ):
-    results = []
-    for file, expected_hash in zip(files, hashes):
-        if not file.filename:
-            continue
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
 
-        dest = PHOTOS_DIR / file.filename
-        stem, suffix, counter = dest.stem, dest.suffix, 1
-        while dest.exists():
-            dest = PHOTOS_DIR / f"{stem}_{counter}{suffix}"
-            counter += 1
+    dest = PHOTOS_DIR / file.filename
+    stem, suffix, counter = dest.stem, dest.suffix, 1
+    while dest.exists():
+        dest = PHOTOS_DIR / f"{stem}_{counter}{suffix}"
+        counter += 1
 
-        hasher = hashlib.sha256()
-        with open(dest, "wb") as f:
-            while chunk := file.file.read(1024 * 1024):
-                hasher.update(chunk)
-                f.write(chunk)
+    hasher = hashlib.sha256()
+    with open(dest, "wb") as f:
+        while chunk := file.file.read(1024 * 1024):
+            hasher.update(chunk)
+            f.write(chunk)
 
-        if hasher.hexdigest() == expected_hash:
-            results.append({"filename": dest.name, "status": "ok"})
-        else:
-            dest.unlink()
-            results.append({"filename": file.filename, "status": "failed"})
-
-    return {"results": results}
+    if hasher.hexdigest() == file_hash:
+        return {"filename": dest.name, "status": "ok"}
+    dest.unlink()
+    return {"filename": file.filename, "status": "failed"}
 
 @app.post("/delete")
 def delete(filename: str = Form(...), user: str = Depends(verify_credentials)):
