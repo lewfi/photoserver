@@ -38,6 +38,8 @@ def gallery(request: Request, user: str = Depends(verify_credentials)):
 @app.post("/upload")
 def upload(files: list[UploadFile] = File(...), user: str = Depends(verify_credentials)):
     for file in files:
+        if not file.filename:
+            continue
         dest = PHOTOS_DIR / file.filename
         stem, suffix, counter = dest.stem, dest.suffix, 1
         while dest.exists():

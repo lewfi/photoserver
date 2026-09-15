@@ -14,13 +14,15 @@
 <body>
     <h1>📸 My Photos</h1>
     <form action="/upload" method="post" enctype="multipart/form-data">
-        <input type="file" name="files" multiple accept="image/*,video/*"><br><br>
+        <input type="file" name="files" multiple accept="image/*,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2" required><br><br>
         <button type="submit">Upload</button>
     </form>
     <div class="grid">
         {% for f in files %}
-        {% if f.endswith('.mp4') or f.endswith('.mov') %}
+        {% if f.lower().endswith(('.mp4', '.mov')) %}
             <video src="/files/{{ f }}" controls></video>
+        {% elif f.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2')) %}
+            <a href="/files/{{ f }}">{{ f }}</a>
         {% else %}
             <img src="/files/{{ f }}" loading="lazy">
         {% endif %}
