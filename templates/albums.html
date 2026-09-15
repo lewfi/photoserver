@@ -10,10 +10,13 @@
         button:disabled { background:#555; }
         input[type=text] { padding:8px; border-radius:6px; border:none; }
         a { color:#0a84ff; }
-        .albums { display:grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap:12px; margin-top:16px; }
+        .albums { display:grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap:16px; margin-top:16px; }
+        .album-card { background:#1c1c1c; padding:8px; border-radius:8px; }
         .album { display:block; text-decoration:none; color:inherit; }
         .album img { width:100%; height:120px; object-fit:cover; border-radius:6px; background:#333; }
         .album-name { font-size:14px; margin-top:4px; }
+        .album-card form { margin-top:6px; display:flex; gap:4px; }
+        .album-card input[type=text] { flex:1; width:0; }
         #progress-wrap { display:none; background:#333; border-radius:8px; margin-top:12px; overflow:hidden; }
         #progress-bar { height:20px; width:0%; background:#0a84ff; text-align:center; color:#fff; font-size:12px; line-height:20px; }
         #status { margin-top:8px; }
@@ -23,7 +26,12 @@
     <h1>📸 My Photos</h1>
     <p>{{ storage.used_gb }} GB used of {{ storage.total_gb }} GB ({{ storage.percent }}%)</p>
 
-    <form id="upload-form" enctype="multipart/form-data">
+    <form action="/albums/create" method="post">
+        <input type="text" name="name" placeholder="New album name" required>
+        <button type="submit">Create Album</button>
+    </form>
+
+    <form id="upload-form" enctype="multipart/form-data" style="margin-top:16px;">
         <input type="text" id="folder-input" name="folder" placeholder="Album name (optional, defaults to today)"><br><br>
         <input type="file" id="file-input" name="files" multiple accept="image/*,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2" required><br><br>
         <button type="submit" id="upload-btn">Upload</button>
@@ -33,14 +41,25 @@
 
     <div class="albums">
         {% for album in folders %}
-          <a class="album" href="/folder/{{ album.name }}">
-            {% if album.cover %}
-              <img src="/thumbnails/{{ album.cover }}" loading="lazy">
-            {% else %}
-              <img src="">
-            {% endif %}
-            <div class="album-name">{{ album.name }} ({{ album.count }})</div>
-          </a>
+          <div class="album-card">
+            <a class="album" href="/folder/{{ album.name }}">
+              {% if album.cover %}
+                <img src="/thumbnails/{{ album.cover }}" loading="lazy">
+              {% else %}
+                <img src="">
+              {% endif %}
+              <div class="album-name">{{ album.name }} ({{ album.count }})</div>
+            </a>
+            <form action="/albums/rename" method="post">
+              <input type="hidden" name="old_name" value="{{ album.name }}">
+              <input type="text" name="new_name" placeholder="Rename to...">
+              <button type="submit">Rename</button>
+            </form>
+            <form action="/albums/delete" method="post" onsubmit="return confirm('Delete entire album {{ album.name }} and all its photos?')">
+              <input type="hidden" name="name" value="{{ album.name }}">
+              <button type="submit">Delete Album</button>
+            </form>
+          </div>
         {% endfor %}
     </div>
 

@@ -51,6 +51,13 @@ def sanitize_folder_name(name: str) -> str:
     return name
 
 
+def list_album_names():
+    return sorted(
+        p.name for p in PHOTOS_DIR.iterdir()
+        if p.is_dir() and p.name != ".thumbnails"
+    )
+
+
 def generate_thumbnail(path: Path, thumb_folder: Path):
     if path.suffix.lower() in RAW_EXTENSIONS:
         return
@@ -63,6 +70,12 @@ def generate_thumbnail(path: Path, thumb_folder: Path):
         img.save(thumb_folder / path.name, "JPEG", quality=80)
     except Exception:
         pass
+
+
+def clear_cover_if_matches(folder_path: Path, filename: str):
+    cover_file = folder_path / ".cover"
+    if cover_file.exists() and cover_file.read_text().strip() == filename:
+        cover_file.unlink()
 
 
 templates = Jinja2Templates(directory="templates")
@@ -83,16 +96,22 @@ def albums(request: Request, user: str = Depends(verify_credentials)):
     for entry in sorted(PHOTOS_DIR.iterdir(), reverse=True):
         if not entry.is_dir() or entry.name == ".thumbnails":
             continue
-        files_in_folder = [p for p in entry.iterdir() if p.is_file()]
-        if not files_in_folder:
-            continue
-        cover = None
+        files_in_folder = [p for p in entry.iterdir() if p.is_file() and not p.name.startswith(".")]
         thumb_folder = THUMBS_DIR / entry.name
-        if thumb_folder.exists():
+
+        cover = None
+        cover_file = entry / ".cover"
+        if cover_file.exists():
+            chosen = cover_file.read_text().strip()
+            if thumb_folder.exists() and (thumb_folder / chosen).exists():
+                cover = f"{entry.name}/{chosen}"
+
+        if cover is None and thumb_folder.exists():
             for p in files_in_folder:
                 if (thumb_folder / p.name).exists():
                     cover = f"{entry.name}/{p.name}"
                     break
+
         folder_list.append({"name": entry.name, "count": len(files_in_folder), "cover": cover})
 
     return templates.TemplateResponse(request, "albums.html", {"folders": folder_list, "storage": storage})
@@ -111,7 +130,7 @@ def folder_view(
     if not folder_path.is_dir():
         raise HTTPException(status_code=404, detail="Album not found")
 
-    files = [p for p in folder_path.iterdir() if p.is_file()]
+    files = [p for p in folder_path.iterdir() if p.is_file() and not p.name.startswith(".")]
 
     if type == "raw":
         files = [p for p in files if p.suffix.lower() in RAW_EXTENSIONS]
@@ -132,7 +151,171 @@ def folder_view(
         "thumbs": thumbs,
         "sort": sort,
         "type": type,
+        "all_albums": [a for a in list_album_names() if a != safe_folder],
     })
+
+
+@app.post("/albums/create")
+def create_album(name: str = Form(...), user: str = Depends(verify_credentials)):
+    safe_name = sanitize_folder_name(name)
+    (PHOTOS_DIR / safe_name).mkdir(exist_ok=True)
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/albums/rename")
+def rename_album(old_name: str = Form(...), new_name: str = Form(...), user: str = Depends(verify_credentials)):
+    safe_old = Path(old_name).name
+    safe_new = sanitize_folder_name(new_name)
+
+    old_path = (PHOTOS_DIR / safe_old).resolve()
+    new_path = (PHOTOS_DIR / safe_new).resolve()
+
+    if not old_path.is_dir() or not str(old_path).startswith(str(PHOTOS_DIR.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid album")
+    if new_path.exists():
+        raise HTTPException(status_code=400, detail="An album with that name already exists")
+
+    old_path.rename(new_path)
+
+    old_thumbs = THUMBS_DIR / safe_old
+    if old_thumbs.exists():
+        old_thumbs.rename(THUMBS_DIR / safe_new)
+
+    return RedirectResponse(url=f"/folder/{safe_new}", status_code=303)
+
+
+@app.post("/albums/delete")
+def delete_album(name: str = Form(...), user: str = Depends(verify_credentials)):
+    safe_name = Path(name).name
+    target = (PHOTOS_DIR / safe_name).resolve()
+    if not str(target).startswith(str(PHOTOS_DIR.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid album")
+    if target.is_dir():
+        shutil.rmtree(target)
+    thumbs = THUMBS_DIR / safe_name
+    if thumbs.is_dir():
+        shutil.rmtree(thumbs)
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/albums/set-cover")
+def set_cover(folder: str = Form(...), filename: str = Form(...), user: str = Depends(verify_credentials)):
+    safe_folder = Path(folder).name
+    safe_name = Path(filename).name
+    target = (PHOTOS_DIR / safe_folder / safe_name).resolve()
+    if not str(target).startswith(str(PHOTOS_DIR.resolve())) or not target.is_file():
+        raise HTTPException(status_code=400, detail="Invalid file")
+    (PHOTOS_DIR / safe_folder / ".cover").write_text(safe_name)
+    return RedirectResponse(url=f"/folder/{safe_folder}", status_code=303)
+
+
+@app.post("/move")
+def move_photo(
+    filename: str = Form(...),
+    from_folder: str = Form(...),
+    to_folder: str = Form(""),
+    to_folder_new: str = Form(""),
+    user: str = Depends(verify_credentials),
+):
+    safe_name = Path(filename).name
+    safe_from = Path(from_folder).name
+
+    if to_folder_new.strip():
+        safe_to = sanitize_folder_name(to_folder_new)
+    elif to_folder.strip():
+        safe_to = Path(to_folder).name
+    else:
+        raise HTTPException(status_code=400, detail="No destination album given")
+
+    src = (PHOTOS_DIR / safe_from / safe_name).resolve()
+    if not src.is_file() or not str(src).startswith(str(PHOTOS_DIR.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid file")
+
+    dest_folder = PHOTOS_DIR / safe_to
+    dest_folder.mkdir(exist_ok=True)
+
+    dest = dest_folder / safe_name
+    stem, suffix, counter = dest.stem, dest.suffix, 1
+    while dest.exists():
+        dest = dest_folder / f"{stem}_{counter}{suffix}"
+        counter += 1
+
+    shutil.move(str(src), str(dest))
+    clear_cover_if_matches(PHOTOS_DIR / safe_from, safe_name)
+
+    src_thumb = THUMBS_DIR / safe_from / safe_name
+    if src_thumb.exists():
+        dest_thumb_folder = THUMBS_DIR / safe_to
+        dest_thumb_folder.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src_thumb), str(dest_thumb_folder / dest.name))
+
+    return RedirectResponse(url=f"/folder/{safe_from}", status_code=303)
+
+
+@app.post("/bulk-delete")
+def bulk_delete(
+    folder: str = Form(...),
+    selected: list[str] = Form(default=[]),
+    user: str = Depends(verify_credentials),
+):
+    safe_folder = Path(folder).name
+    for filename in selected:
+        safe_name = Path(filename).name
+        if safe_name.startswith("."):
+            continue
+        target = (PHOTOS_DIR / safe_folder / safe_name).resolve()
+        if str(target).startswith(str(PHOTOS_DIR.resolve())) and target.exists():
+            target.unlink()
+        thumb = THUMBS_DIR / safe_folder / safe_name
+        if thumb.exists():
+            thumb.unlink()
+        clear_cover_if_matches(PHOTOS_DIR / safe_folder, safe_name)
+    return RedirectResponse(url=f"/folder/{safe_folder}", status_code=303)
+
+
+@app.post("/bulk-move")
+def bulk_move(
+    folder: str = Form(...),
+    selected: list[str] = Form(default=[]),
+    to_folder: str = Form(""),
+    to_folder_new: str = Form(""),
+    user: str = Depends(verify_credentials),
+):
+    safe_from = Path(folder).name
+    if to_folder_new.strip():
+        safe_to = sanitize_folder_name(to_folder_new)
+    elif to_folder.strip():
+        safe_to = Path(to_folder).name
+    else:
+        raise HTTPException(status_code=400, detail="No destination album given")
+
+    dest_folder = PHOTOS_DIR / safe_to
+    dest_folder.mkdir(exist_ok=True)
+
+    for filename in selected:
+        safe_name = Path(filename).name
+        if safe_name.startswith("."):
+            continue
+        src = (PHOTOS_DIR / safe_from / safe_name).resolve()
+        if not src.is_file() or not str(src).startswith(str(PHOTOS_DIR.resolve())):
+            continue
+
+        dest = dest_folder / safe_name
+        stem, suffix, counter = dest.stem, dest.suffix, 1
+        while dest.exists():
+            dest = dest_folder / f"{stem}_{counter}{suffix}"
+            counter += 1
+
+        shutil.move(str(src), str(dest))
+        clear_cover_if_matches(PHOTOS_DIR / safe_from, safe_name)
+
+        src_thumb = THUMBS_DIR / safe_from / safe_name
+        if src_thumb.exists():
+            dest_thumb_folder = THUMBS_DIR / safe_to
+            dest_thumb_folder.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src_thumb), str(dest_thumb_folder / dest.name))
+
+    return RedirectResponse(url=f"/folder/{safe_from}", status_code=303)
 
 
 @app.post("/upload")
@@ -183,5 +366,7 @@ def delete(filename: str = Form(...), folder: str = Form(...), user: str = Depen
     thumb = THUMBS_DIR / safe_folder / safe_name
     if thumb.exists():
         thumb.unlink()
+
+    clear_cover_if_matches(PHOTOS_DIR / safe_folder, safe_name)
 
     return RedirectResponse(url=f"/folder/{safe_folder}", status_code=303)

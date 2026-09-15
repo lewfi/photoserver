@@ -9,9 +9,13 @@
         button { background:#0a84ff; color:#fff; border:none; padding:10px 16px; border-radius:8px; font-size:16px; }
         button:disabled { background:#555; }
         a { color:#0a84ff; }
-        select { padding:6px; border-radius:6px; }
-        .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap:8px; margin-top:16px; }
+        select, input[type=text] { padding:6px; border-radius:6px; border:none; }
+        .bulk-bar { background:#1c1c1c; padding:10px; border-radius:8px; margin-top:16px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+        .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap:8px; margin-top:16px; }
+        .grid > div { background:#1c1c1c; padding:6px; border-radius:8px; }
         .grid img, .grid video { width:100%; height:120px; object-fit:cover; border-radius:6px; }
+        .grid form { margin-top:4px; display:flex; gap:4px; flex-wrap:wrap; }
+        .checkbox-row { display:flex; align-items:center; gap:6px; margin-bottom:4px; }
         #progress-wrap { display:none; background:#333; border-radius:8px; margin-top:12px; overflow:hidden; }
         #progress-bar { height:20px; width:0%; background:#0a84ff; text-align:center; color:#fff; font-size:12px; line-height:20px; }
         #status { margin-top:8px; }
@@ -20,6 +24,16 @@
 <body>
     <a href="/">← All Albums</a>
     <h1>{{ folder }}</h1>
+
+    <form action="/albums/rename" method="post" style="display:inline-flex; gap:4px;">
+        <input type="hidden" name="old_name" value="{{ folder }}">
+        <input type="text" name="new_name" placeholder="Rename album">
+        <button type="submit">Rename</button>
+    </form>
+    <form action="/albums/delete" method="post" style="display:inline;" onsubmit="return confirm('Delete entire album {{ folder }} and all its photos?')">
+        <input type="hidden" name="name" value="{{ folder }}">
+        <button type="submit">Delete Album</button>
+    </form>
 
     <form method="get">
         Sort:
@@ -43,11 +57,31 @@
     <div id="progress-wrap"><div id="progress-bar">0%</div></div>
     <div id="status"></div>
 
+    <!-- Bulk action form: checkboxes live inside the grid below, but belong to this form via form="bulk-form" -->
+    <form id="bulk-form" method="post"></form>
+    <div class="bulk-bar">
+        <input type="hidden" name="folder" value="{{ folder }}" form="bulk-form">
+        <button type="button" onclick="toggleAll()">Select All / None</button>
+        <button type="submit" form="bulk-form" formaction="/bulk-delete" onclick="return confirm('Delete all selected photos?')">Delete Selected</button>
+        <select name="to_folder" form="bulk-form">
+            <option value="">— move selected to —</option>
+            {% for a in all_albums %}
+              <option value="{{ a }}">{{ a }}</option>
+            {% endfor %}
+        </select>
+        <input type="text" name="to_folder_new" placeholder="or new album" form="bulk-form">
+        <button type="submit" form="bulk-form" formaction="/bulk-move">Move Selected</button>
+    </div>
+
     <div class="grid">
         {% for f in files %}
           <div>
+            <div class="checkbox-row">
+              <input type="checkbox" name="selected" value="{{ f }}" form="bulk-form">
+              <span>{{ f }}</span>
+            </div>
             {% if f.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2')) %}
-              <a href="/files/{{ folder }}/{{ f }}">{{ f }}</a>
+              <a href="/files/{{ folder }}/{{ f }}">Download RAW</a>
             {% elif f in thumbs %}
               <a href="/files/{{ folder }}/{{ f }}"><img src="/thumbnails/{{ folder }}/{{ f }}" loading="lazy"></a>
             {% else %}
@@ -58,11 +92,34 @@
               <input type="hidden" name="folder" value="{{ folder }}">
               <button type="submit">Delete</button>
             </form>
+            <form action="/move" method="post">
+              <input type="hidden" name="filename" value="{{ f }}">
+              <input type="hidden" name="from_folder" value="{{ folder }}">
+              <select name="to_folder">
+                <option value="">— choose album —</option>
+                {% for a in all_albums %}
+                  <option value="{{ a }}">{{ a }}</option>
+                {% endfor %}
+              </select>
+              <input type="text" name="to_folder_new" placeholder="or new album">
+              <button type="submit">Move</button>
+            </form>
+            <form action="/albums/set-cover" method="post">
+              <input type="hidden" name="folder" value="{{ folder }}">
+              <input type="hidden" name="filename" value="{{ f }}">
+              <button type="submit">Set as Cover</button>
+            </form>
           </div>
         {% endfor %}
     </div>
 
     <script>
+        function toggleAll() {
+            const boxes = document.querySelectorAll('input[name="selected"]');
+            const anyUnchecked = Array.from(boxes).some(b => !b.checked);
+            boxes.forEach(b => b.checked = anyUnchecked);
+        }
+
         const form = document.getElementById('upload-form');
         const fileInput = document.getElementById('file-input');
         const folderValue = document.getElementById('folder-value').value;
@@ -107,4 +164,44 @@
             });
         }
 
-        async
+        async function uploadWithRetries(file, hash, index, total) {
+            for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+                status.textContent = `File ${index + 1}/${total}: ${file.name}` + (attempt > 1 ? ` (retry ${attempt - 1})` : '');
+                const result = await uploadOneFile(file, hash);
+                if (result === 'ok') return true;
+                if (attempt < MAX_RETRIES) {
+                    status.textContent = `${file.name} failed — retrying in ${RETRY_DELAY_MS / 1000}s...`;
+                    await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+                }
+            }
+            return false;
+        }
+
+        form.addEventListener('submit', async function (e) {
+            e.preventDefault();
+            const filesArray = Array.from(fileInput.files);
+            uploadBtn.disabled = true;
+            progressWrap.style.display = 'block';
+            const failed = [];
+
+            for (let i = 0; i < filesArray.length; i++) {
+                const file = filesArray[i];
+                progressBar.style.width = '0%';
+                progressBar.textContent = '0%';
+                status.textContent = `Verifying file ${i + 1}/${filesArray.length}: ${file.name}...`;
+                const hash = await sha256Hex(file);
+                const success = await uploadWithRetries(file, hash, i, filesArray.length);
+                if (!success) failed.push(file.name);
+            }
+
+            uploadBtn.disabled = false;
+            if (failed.length === 0) {
+                status.textContent = `All ${filesArray.length} file(s) uploaded. Refreshing...`;
+                setTimeout(() => location.reload(), 800);
+            } else {
+                status.textContent = `${failed.length} file(s) failed after ${MAX_RETRIES} attempts: ${failed.join(', ')}.`;
+            }
+        });
+    </script>
+</body>
+</html>
