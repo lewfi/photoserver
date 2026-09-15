@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Photos</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; background:#111; color:#eee; margin:0; padding:16px; }
+        button { background:#0a84ff; color:#fff; border:none; padding:10px 16px; border-radius:8px; font-size:16px; }
+        .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap:8px; margin-top:16px; }
+        .grid img, .grid video { width:100%; height:120px; object-fit:cover; border-radius:6px; }
+    </style>
+</head>
+<body>
+    <h1>📸 My Photos</h1>
+    <form action="/upload" method="post" enctype="multipart/form-data">
+        <input type="file" name="files" multiple accept="image/*,video/*"><br><br>
+        <button type="submit">Upload</button>
+    </form>
+    <div class="grid">
+        {% for f in files %}
+        {% if f.endswith('.mp4') or f.endswith('.mov') %}
+            <video src="/files/{{ f }}" controls></video>
+        {% else %}
+            <img src="/files/{{ f }}" loading="lazy">
+        {% endif %}
+        {% endfor %}
+    </div>
+</body>
+</html>
