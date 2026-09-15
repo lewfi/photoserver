@@ -1,22 +1,32 @@
+import hashlib
 import os
 import secrets
 import shutil
-import hashlib
-
-from dotenv import load_dotenv
 from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile, Request, Depends, HTTPException, status, Form
+from dotenv import load_dotenv
+from PIL import Image
+
+from fastapi import (
+    FastAPI, File, UploadFile, Request, Depends,
+    HTTPException, status, Form,
+)
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 PHOTOS_DIR = Path("/mnt/photos")
+THUMBS_DIR = PHOTOS_DIR / ".thumbnails"
+THUMBS_DIR.mkdir(exist_ok=True)
+
+RAW_EXTENSIONS = {".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2"}
+
 app = FastAPI()
 
 load_dotenv()
 security = HTTPBasic()
+
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     valid_user = secrets.compare_digest(credentials.username, os.environ["AUTH_USERNAME"])
@@ -28,19 +38,39 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
             headers={"WWW-Authenticate": "Basic"},
         )
 
+
+def generate_thumbnail(path: Path):
+    if path.suffix.lower() in RAW_EXTENSIONS:
+        return
+    try:
+        img = Image.open(path)
+        img.thumbnail((300, 300))
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        img.save(THUMBS_DIR / path.name, "JPEG", quality=80)
+    except Exception:
+        pass
+
+
 templates = Jinja2Templates(directory="templates")
 app.mount("/files", StaticFiles(directory=PHOTOS_DIR), name="files")
+app.mount("/thumbnails", StaticFiles(directory=THUMBS_DIR), name="thumbnails")
+
 
 @app.get("/", response_class=HTMLResponse)
 def gallery(request: Request, user: str = Depends(verify_credentials)):
     files = [p.name for p in PHOTOS_DIR.iterdir() if p.is_file()]
+    thumbs = {p.name for p in THUMBS_DIR.iterdir() if p.is_file()}
     total, used, free = shutil.disk_usage(PHOTOS_DIR)
     storage = {
         "used_gb": round(used / (1024**3), 1),
         "total_gb": round(total / (1024**3), 1),
         "percent": round(used / total * 100, 1),
     }
-    return templates.TemplateResponse(request, "index.html", {"files": files, "storage": storage})
+    return templates.TemplateResponse(
+        request, "index.html", {"files": files, "thumbs": thumbs, "storage": storage}
+    )
+
 
 @app.post("/upload")
 def upload(
@@ -63,10 +93,13 @@ def upload(
             hasher.update(chunk)
             f.write(chunk)
 
-    if hasher.hexdigest() == file_hash:
-        return {"filename": dest.name, "status": "ok"}
-    dest.unlink()
-    return {"filename": file.filename, "status": "failed"}
+    if hasher.hexdigest() != file_hash:
+        dest.unlink()
+        return {"filename": file.filename, "status": "failed"}
+
+    generate_thumbnail(dest)
+    return {"filename": dest.name, "status": "ok"}
+
 
 @app.post("/delete")
 def delete(filename: str = Form(...), user: str = Depends(verify_credentials)):
@@ -76,4 +109,7 @@ def delete(filename: str = Form(...), user: str = Depends(verify_credentials)):
         raise HTTPException(status_code=400, detail="Invalid filename")
     if target.exists():
         target.unlink()
+    thumb = THUMBS_DIR / safe_name
+    if thumb.exists():
+        thumb.unlink()
     return RedirectResponse(url="/", status_code=303)

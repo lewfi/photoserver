@@ -18,6 +18,7 @@
 <body>
     <h1>📸 My Photos</h1>
     <p>{{ storage.used_gb }} GB used of {{ storage.total_gb }} GB ({{ storage.percent }}%)</p>
+
     <form id="upload-form" enctype="multipart/form-data">
         <input type="file" id="file-input" name="files" multiple accept="image/*,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2" required><br><br>
         <button type="submit" id="upload-btn">Upload</button>
@@ -34,6 +35,8 @@
               <video src="/files/{{ f }}" controls></video>
             {% elif f.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2')) %}
               <a href="/files/{{ f }}">{{ f }}</a>
+            {% elif f in thumbs %}
+              <a href="/files/{{ f }}"><img src="/thumbnails/{{ f }}" loading="lazy"></a>
             {% else %}
               <img src="/files/{{ f }}" loading="lazy">
             {% endif %}
@@ -44,7 +47,8 @@
           </div>
         {% endfor %}
     </div>
-            <script>
+
+    <script>
         const form = document.getElementById('upload-form');
         const fileInput = document.getElementById('file-input');
         const uploadBtn = document.getElementById('upload-btn');
