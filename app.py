@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import os
 import re
 import secrets
@@ -8,6 +9,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from PIL import Image, ImageOps
+from pillow_heif import register_heif_opener
 
 from fastapi import (
     FastAPI, File, UploadFile, Request, Depends,
@@ -17,6 +19,10 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+
+register_heif_opener()
+
+logger = logging.getLogger("photoserver")
 
 PHOTOS_DIR = Path("/mnt/photos")
 THUMBS_DIR = PHOTOS_DIR / ".thumbnails"
@@ -69,8 +75,8 @@ def generate_thumbnail(path: Path, thumb_folder: Path):
             img = img.convert("RGB")
         thumb_folder.mkdir(parents=True, exist_ok=True)
         img.save(thumb_folder / path.name, "JPEG", quality=80)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Thumbnail failed for {path.name}: {e}")
 
 
 def clear_cover_if_matches(folder_path: Path, filename: str):
@@ -328,6 +334,8 @@ def upload(
 ):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
+    if file.filename.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid filename")
 
     safe_folder = sanitize_folder_name(folder)
     folder_path = PHOTOS_DIR / safe_folder
