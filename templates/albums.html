@@ -1,155 +1,334 @@
+<!--
+  Matches lewfi/photoserver's real backend 1:1 (GET /, POST /albums/create,
+  /albums/rename, /albums/delete, POST /upload with file+file_hash+folder).
+  Drop this in as templates/albums.html.
+-->
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>My Photos</title>
-    <style>
-        body { font-family: -apple-system, sans-serif; background:#111; color:#eee; margin:0; padding:16px; }
-        button { background:#0a84ff; color:#fff; border:none; padding:10px 16px; border-radius:8px; font-size:16px; }
-        button:disabled { background:#555; }
-        input[type=text] { padding:8px; border-radius:6px; border:none; }
-        a { color:#0a84ff; }
-        .albums { display:grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap:16px; margin-top:16px; }
-        .album-card { background:#1c1c1c; padding:8px; border-radius:8px; }
-        .album { display:block; text-decoration:none; color:inherit; }
-        .album img { width:100%; height:120px; object-fit:cover; border-radius:6px; background:#333; }
-        .album-name { font-size:14px; margin-top:4px; }
-        .album-card form { margin-top:6px; display:flex; gap:4px; }
-        .album-card input[type=text] { flex:1; width:0; }
-        #progress-wrap { display:none; background:#333; border-radius:8px; margin-top:12px; overflow:hidden; }
-        #progress-bar { height:20px; width:0%; background:#0a84ff; text-align:center; color:#fff; font-size:12px; line-height:20px; }
-        #status { margin-top:8px; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#ffffff">
+<title>Photo Library</title>
+<style>
+  :root{
+    --bg:#ffffff; --bg-elev:#ffffff; --bg-elev-2: oklch(94% 0 0);
+    --hairline: oklch(88% 0 0); --border: oklch(75% 0 0); --ink: oklch(12% 0 0);
+    --text: oklch(12% 0 0); --text-dim: oklch(45% 0 0); --text-faint: oklch(68% 0 0);
+    --danger: oklch(50% 0.18 25); --success: oklch(42% 0.13 148);
+    --ease: cubic-bezier(.22,.61,.36,1);
+    --font-sans: -apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg); color:var(--text); font-family:var(--font-sans);
+    font-size:15px; line-height:1.45; -webkit-font-smoothing:antialiased;
+    padding-top:env(safe-area-inset-top); padding-bottom:env(safe-area-inset-bottom);
+    min-height:100vh;
+  }
+  a{color:var(--text);text-decoration:underline;text-decoration-color:var(--border);text-underline-offset:2px;}
+  a:hover{text-decoration-color:var(--text);}
+  button,input,select{font-family:inherit;}
+
+  .shell{max-width:1160px;margin:0 auto;padding:0 24px 80px;}
+  .eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--text-dim);font-weight:600;margin-bottom:8px;}
+
+  header.topbar{
+    display:flex;align-items:flex-end;justify-content:space-between;
+    padding:32px 24px 22px;max-width:1160px;margin:0 auto;gap:16px;
+    border-bottom:1px solid var(--hairline);margin-bottom:28px;
+  }
+  .brand{font-size:30px;font-weight:700;letter-spacing:-0.01em;}
+
+  .storage-block{text-align:right;min-width:150px;}
+  .storage-value{font-size:13px;color:var(--text-dim);margin-bottom:6px;white-space:nowrap;}
+  .storage-block .track{width:150px;height:1px;background:var(--hairline);margin-left:auto;}
+  .storage-block .fill{height:100%;background:var(--ink);}
+
+  .create-row{display:flex;justify-content:flex-end;margin-bottom:8px;}
+  .create-form{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;}
+  .create-form input[type="text"]{
+    border:none;border-bottom:1px solid var(--border);background:transparent;color:var(--text);
+    padding:6px 2px;font-size:13.5px;width:190px;
+  }
+  .create-form input[type="text"]:focus{outline:none;border-bottom-color:var(--ink);}
+
+  .btn{
+    font-size:12px;padding:10px 18px;border-radius:0;border:1px solid var(--ink);background:var(--ink);color:#fff;
+    text-transform:uppercase;letter-spacing:.05em;font-weight:600;cursor:pointer;white-space:nowrap;
+    transition:background .15s var(--ease), opacity .15s var(--ease);
+  }
+  .btn:hover{background:oklch(28% 0 0);}
+  .btn-small{padding:7px 13px;font-size:11px;}
+
+  .btn-text{
+    background:none;border:none;color:var(--text-dim);font-size:12px;text-transform:uppercase;
+    letter-spacing:.05em;font-weight:600;cursor:pointer;padding:4px 2px;white-space:nowrap;
+  }
+  .btn-text::before{content:"[ ";} .btn-text::after{content:" ]";}
+  .btn-text:hover{color:var(--text);}
+  .btn-text.confirm{color:var(--danger);}
+
+  .dropzone{
+    margin:8px 0 32px;border:1px dashed var(--border);border-radius:0;background:var(--bg-elev);
+    padding:36px 24px;display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;cursor:pointer;
+    transition:border-color .2s var(--ease), background .2s var(--ease);
+  }
+  .dropzone:hover{border-color:var(--ink);}
+  .dropzone.dragover{border-color:var(--ink);border-style:solid;background:var(--bg-elev-2);}
+  .dropzone .icon{
+    width:26px;height:26px;border:1px solid var(--ink);display:flex;align-items:center;justify-content:center;
+    color:var(--ink);font-size:16px;font-weight:400;line-height:1;
+  }
+  .dropzone .title{font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;}
+  .dropzone .title b{font-weight:700;}
+  .dropzone .hint{font-size:12px;color:var(--text-faint);max-width:440px;}
+  .dropzone input[type="file"]{display:none;}
+  .folder-input{
+    border:none;border-bottom:1px solid var(--border);border-radius:0;padding:7px 2px;font-size:13px;
+    background:transparent;color:var(--text);width:min(280px,90%);text-align:center;
+  }
+  .folder-input:focus{outline:none;border-bottom-color:var(--ink);}
+
+  .queue{display:flex;flex-direction:column;gap:6px;margin-bottom:28px;max-height:0;overflow:hidden;transition:max-height .3s var(--ease);}
+  .queue.open{max-height:700px;}
+  .queue-row{display:flex;align-items:center;gap:12px;background:var(--bg-elev);border:1px solid var(--hairline);border-radius:0;padding:10px 14px;}
+  .queue-row .thumb{width:34px;height:34px;border-radius:0;flex-shrink:0;background:var(--bg-elev-2);display:flex;align-items:center;justify-content:center;font-size:9px;font-family:ui-monospace,"SF Mono",Menlo,monospace;color:var(--text-faint);}
+  .queue-row .meta{flex:1;min-width:0;}
+  .queue-row .fname{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .queue-row .status-line{display:flex;align-items:center;gap:8px;margin-top:5px;}
+  .queue-row .bar{flex:1;height:2px;background:var(--hairline);}
+  .queue-row .bar-fill{height:100%;background:var(--ink);transition:width .25s linear;}
+  .queue-row.failed .bar-fill{background:var(--danger);}
+  .queue-row.done .bar-fill{background:var(--success);}
+  .queue-row .status-text{font-size:11px;color:var(--text-faint);white-space:nowrap;text-transform:uppercase;letter-spacing:.03em;}
+  .queue-row.failed .status-text{color:var(--danger);}
+  .queue-row.done .status-text{color:var(--success);}
+  .queue-row .retry-btn{font-size:11px;color:var(--text);background:none;border:none;cursor:pointer;text-transform:uppercase;letter-spacing:.04em;text-decoration:underline;}
+
+  .section-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:16px;}
+  .section-head .eyebrow{margin-bottom:0;}
+  .section-head .count{font-size:12px;color:var(--text-faint);}
+
+  .albums-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:18px;}
+  .album-card{position:relative;}
+  .album-link{display:block;}
+  .cover{aspect-ratio:1/1;border-radius:0;overflow:hidden;background:var(--bg-elev);border:1px solid var(--hairline);}
+  .cover img{width:100%;height:100%;object-fit:cover;display:block;}
+  .cover-empty{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:38px;font-weight:700;color:var(--text-faint);background:var(--bg-elev-2);}
+  .album-meta-line{padding-top:10px;display:flex;align-items:baseline;gap:6px;}
+  .album-name{font-size:15.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .album-count{font-size:12.5px;color:var(--text-faint);white-space:nowrap;}
+
+  .album-actions{position:absolute;top:8px;right:8px;display:flex;gap:6px;opacity:0;transition:opacity .18s var(--ease);}
+  .album-card:hover .album-actions, .album-card:focus-within .album-actions{opacity:1;}
+  .icon-btn{
+    width:26px;height:26px;border-radius:0;background:#fff;border:1px solid var(--ink);
+    display:flex;align-items:center;justify-content:center;color:var(--ink);cursor:pointer;
+  }
+  .icon-btn:hover{background:var(--ink);color:#fff;}
+  .del-btn{gap:5px;padding:0 8px;width:auto;min-width:26px;font-size:10.5px;text-transform:uppercase;letter-spacing:.03em;}
+  .del-btn.confirm{background:var(--danger);border-color:var(--danger);color:#fff;opacity:1;}
+
+  .rename-form{
+    display:none;gap:6px;position:absolute;inset:0 0 auto 0;top:0;background:#fff;border:1px solid var(--ink);
+    padding:10px;z-index:5;
+  }
+  .album-card.renaming .rename-form{display:flex;}
+  .album-card.renaming .album-link{visibility:hidden;}
+  .rename-form input[type="text"]{flex:1;min-width:0;border:none;border-bottom:1px solid var(--border);padding:6px 2px;font-size:13px;background:transparent;color:var(--text);}
+
+  .empty-state{text-align:center;padding:60px 20px;color:var(--text-faint);font-size:13.5px;}
+
+  @media (max-width:560px){
+    header.topbar{flex-direction:column;align-items:flex-start;padding:24px 20px 18px;gap:14px;}
+    .storage-block{text-align:left;}
+    .storage-block .track{margin-left:0;width:100%;}
+    .shell{padding:0 20px 60px;}
+    .create-row{justify-content:flex-start;}
+    .dropzone{padding:28px 16px;}
+    .albums-grid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;}
+  }
+</style>
 </head>
 <body>
-    <h1>📸 My Photos</h1>
-    <p>{{ storage.used_gb }} GB used of {{ storage.total_gb }} GB ({{ storage.percent }}%)</p>
 
-    <form action="/albums/create" method="post">
-        <input type="text" name="name" placeholder="New album name" required>
-        <button type="submit">Create Album</button>
+<header class="topbar">
+  <div class="brand">Photo Library</div>
+  <div class="storage-block">
+    <div class="eyebrow">[ Storage ]</div>
+    <div class="storage-value">{{ storage.used_gb }} / {{ storage.total_gb }} GB</div>
+    <div class="track"><div class="fill" style="width:{{ storage.percent }}%"></div></div>
+  </div>
+</header>
+
+<div class="shell">
+
+  <div class="create-row">
+    <form class="create-form" action="/albums/create" method="post">
+      <input type="text" name="name" placeholder="New album name" required>
+      <button type="submit" class="btn">Create Album</button>
     </form>
+  </div>
 
-    <form id="upload-form" enctype="multipart/form-data" style="margin-top:16px;">
-        <input type="text" id="folder-input" name="folder" placeholder="Album name (optional, defaults to today)"><br><br>
-        <input type="file" id="file-input" name="files" multiple accept="image/*,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2" required><br><br>
-        <button type="submit" id="upload-btn">Upload</button>
-    </form>
-    <div id="progress-wrap"><div id="progress-bar">0%</div></div>
-    <div id="status"></div>
-
-    <div class="albums">
-        {% for album in folders %}
-          <div class="album-card">
-            <a class="album" href="/folder/{{ album.name }}">
-              {% if album.cover %}
-                <img src="/thumbnails/{{ album.cover }}" loading="lazy">
-              {% else %}
-                <img src="">
-              {% endif %}
-              <div class="album-name">{{ album.name }} ({{ album.count }})</div>
-            </a>
-            <form action="/albums/rename" method="post">
-              <input type="hidden" name="old_name" value="{{ album.name }}">
-              <input type="text" name="new_name" placeholder="Rename to...">
-              <button type="submit">Rename</button>
-            </form>
-            <form action="/albums/delete" method="post" onsubmit="return confirm('Delete entire album {{ album.name }} and all its photos?')">
-              <input type="hidden" name="name" value="{{ album.name }}">
-              <button type="submit">Delete Album</button>
-            </form>
-          </div>
-        {% endfor %}
+  <form id="upload-form" enctype="multipart/form-data">
+    <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload photos">
+      <div class="icon">+</div>
+      <div class="title">Drag photos here, or <b>browse files</b></div>
+      <div class="hint">Accepts JPEG, PNG, HEIC, TIFF and RAW — CR2, CR3, NEF, ARW, DNG, RAF, ORF, RW2</div>
+      <input type="text" id="folder-input" name="folder" class="folder-input" placeholder="Album (optional — defaults to today)" onclick="event.stopPropagation()">
+      <input type="file" id="file-input" name="files" multiple accept="image/*,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2">
     </div>
+  </form>
 
-    <script>
-        const form = document.getElementById('upload-form');
-        const fileInput = document.getElementById('file-input');
-        const folderInput = document.getElementById('folder-input');
-        const uploadBtn = document.getElementById('upload-btn');
-        const progressWrap = document.getElementById('progress-wrap');
-        const progressBar = document.getElementById('progress-bar');
-        const status = document.getElementById('status');
+  <div class="queue" id="queue"></div>
 
-        const MAX_RETRIES = 3;
-        const RETRY_DELAY_MS = 2000;
+  <div class="section-head">
+    <div class="eyebrow">[ Albums ]</div>
+    <span class="count">{{ folders|length }} album{{ '' if folders|length == 1 else 's' }}</span>
+  </div>
 
-        async function sha256Hex(file) {
-            const buffer = await file.arrayBuffer();
-            const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
-            return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-        }
+  <div class="albums-grid">
+    {% for album in folders %}
+      <div class="album-card" data-name="{{ album.name }}">
+        <a class="album-link" href="/folder/{{ album.name }}">
+          <div class="cover">
+            {% if album.cover %}
+              <img src="/thumbnails/{{ album.cover }}" loading="lazy" alt="{{ album.name }}">
+            {% else %}
+              <div class="cover-empty">{{ album.name[0]|upper }}</div>
+            {% endif %}
+          </div>
+          <div class="album-meta-line">
+            <span class="album-name">{{ album.name }}</span>
+            <span class="album-count">({{ album.count }})</span>
+          </div>
+        </a>
+        <div class="album-actions">
+          <button type="button" class="icon-btn rename-toggle" aria-label="Rename {{ album.name }}">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>
+          </button>
+          <form action="/albums/delete" method="post" class="del-form">
+            <input type="hidden" name="name" value="{{ album.name }}">
+            <button type="submit" class="icon-btn del-btn" aria-label="Delete {{ album.name }}">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+              <span class="del-label"></span>
+            </button>
+          </form>
+        </div>
+        <form action="/albums/rename" method="post" class="rename-form">
+          <input type="hidden" name="old_name" value="{{ album.name }}">
+          <input type="text" name="new_name" placeholder="New name" required>
+          <button type="submit" class="btn btn-small">Save</button>
+        </form>
+      </div>
+    {% endfor %}
+  </div>
+  {% if not folders %}
+    <div class="empty-state">No albums yet — create one above, or just drop photos in and we'll date-stamp an album for you.</div>
+  {% endif %}
 
-        function uploadOneFile(file, hash, folder) {
-            return new Promise((resolve) => {
-                const formData = new FormData();
-                formData.append('file', file);
-                formData.append('file_hash', hash);
-                formData.append('folder', folder);
+</div>
 
-                const xhr = new XMLHttpRequest();
-                xhr.open('POST', '/upload');
+<script>
+(function(){
+  "use strict";
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 2000;
 
-                xhr.upload.addEventListener('progress', function (event) {
-                    if (event.lengthComputable) {
-                        const percent = Math.round((event.loaded / event.total) * 100);
-                        progressBar.style.width = percent + '%';
-                        progressBar.textContent = percent + '%';
-                    }
-                });
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('file-input');
+  const folderInput = document.getElementById('folder-input');
+  const queueEl = document.getElementById('queue');
 
-                xhr.onload = function () {
-                    if (xhr.status === 200) resolve(JSON.parse(xhr.responseText));
-                    else resolve({ status: 'error' });
-                };
-                xhr.onerror = function () { resolve({ status: 'error' }); };
-                xhr.send(formData);
-            });
-        }
+  dropzone.addEventListener('click', e => { if (e.target !== folderInput) fileInput.click(); });
+  dropzone.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target !== folderInput) fileInput.click(); });
+  fileInput.addEventListener('change', e => { if (e.target.files.length) startBatch(Array.from(e.target.files)); });
+  ['dragenter','dragover'].forEach(evt => dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.add('dragover'); }));
+  ['dragleave','drop'].forEach(evt => dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.remove('dragover'); }));
+  dropzone.addEventListener('drop', e => { if (e.dataTransfer.files.length) startBatch(Array.from(e.dataTransfer.files)); });
 
-        async function uploadWithRetries(file, hash, folder, index, total) {
-            for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-                status.textContent = `File ${index + 1}/${total}: ${file.name}` + (attempt > 1 ? ` (retry ${attempt - 1})` : '');
-                const result = await uploadOneFile(file, hash, folder);
-                if (result.status === 'ok') return result.folder;
-                if (attempt < MAX_RETRIES) {
-                    status.textContent = `${file.name} failed — retrying in ${RETRY_DELAY_MS / 1000}s...`;
-                    await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
-                }
-            }
-            return null;
-        }
+  async function sha256Hex(file){
+    const buffer = await file.arrayBuffer();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+    return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2,'0')).join('');
+  }
+  function uploadOneFile(file, hash, folder, onProgress){
+    return new Promise(resolve => {
+      const fd = new FormData();
+      fd.append('file', file); fd.append('file_hash', hash); fd.append('folder', folder);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/upload');
+      xhr.upload.addEventListener('progress', e => { if (e.lengthComputable) onProgress(Math.round(e.loaded/e.total*100)); });
+      xhr.onload = () => { if (xhr.status === 200){ try{ resolve(JSON.parse(xhr.responseText)); }catch(_){ resolve({status:'error'}); } } else resolve({status:'error'}); };
+      xhr.onerror = () => resolve({status:'error'});
+      xhr.send(fd);
+    });
+  }
+  function renderQueue(items){
+    queueEl.classList.toggle('open', items.length > 0);
+    queueEl.innerHTML = '';
+    items.forEach(item => {
+      const row = document.createElement('div');
+      row.className = 'queue-row' + (item.status==='failed'?' failed':'') + (item.status==='done'?' done':'');
+      const statusText = { hashing:'Verifying…', uploading:`Uploading… ${item.progress}%`, retrying:`Retrying (attempt ${item.attempt}/${MAX_RETRIES})…`, failed:`Failed after ${MAX_RETRIES} attempts`, done:'Uploaded' }[item.status];
+      row.innerHTML = `
+        <div class="thumb">${item.ext}</div>
+        <div class="meta"><div class="fname">${escapeHtml(item.file.name)}</div>
+          <div class="status-line"><div class="bar"><div class="bar-fill" style="width:${item.progress}%"></div></div><div class="status-text">${statusText}</div></div>
+        </div>
+        ${item.status==='failed' ? `<button class="retry-btn" data-retry-idx="${item.idx}">Retry</button>` : ''}
+      `;
+      queueEl.appendChild(row);
+    });
+    queueEl.querySelectorAll('[data-retry-idx]').forEach(btn => btn.addEventListener('click', () => retryOne(items, parseInt(btn.dataset.retryIdx,10))));
+  }
+  async function startBatch(files){
+    const folder = folderInput.value;
+    const items = files.map((file, idx) => ({ idx, file, attempt:0, progress:0, status:'hashing', ext: file.name.split('.').pop().toUpperCase().slice(0,4) }));
+    renderQueue(items);
+    let landedFolder = null;
+    for (const item of items){ const f = await runItem(item, items, folder); if (f) landedFolder = f; }
+    if (items.every(i => i.status === 'done') && landedFolder){
+      setTimeout(() => location.href = '/folder/' + encodeURIComponent(landedFolder), 900);
+    }
+  }
+  async function runItem(item, items, folder){
+    item.status = 'hashing'; renderQueue(items);
+    const hash = await sha256Hex(item.file);
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++){
+      item.attempt = attempt; item.status = attempt > 1 ? 'retrying' : 'uploading'; item.progress = 0; renderQueue(items);
+      const result = await uploadOneFile(item.file, hash, folder, pct => { item.progress = pct; renderQueue(items); });
+      if (result.status === 'ok'){ item.status='done'; item.progress=100; renderQueue(items); return result.folder; }
+      if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+    }
+    item.status = 'failed'; renderQueue(items); return null;
+  }
+  async function retryOne(items, idx){
+    const item = items.find(i => i.idx === idx); if (!item) return;
+    const folder = folderInput.value;
+    await runItem(item, items, folder);
+  }
+  function escapeHtml(s){ return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-        form.addEventListener('submit', async function (e) {
-            e.preventDefault();
-            const filesArray = Array.from(fileInput.files);
-            const folder = folderInput.value;
-            uploadBtn.disabled = true;
-            progressWrap.style.display = 'block';
-
-            const failed = [];
-            let landedFolder = null;
-
-            for (let i = 0; i < filesArray.length; i++) {
-                const file = filesArray[i];
-                progressBar.style.width = '0%';
-                progressBar.textContent = '0%';
-                status.textContent = `Verifying file ${i + 1}/${filesArray.length}: ${file.name}...`;
-                const hash = await sha256Hex(file);
-                const resultFolder = await uploadWithRetries(file, hash, folder, i, filesArray.length);
-                if (resultFolder) landedFolder = resultFolder;
-                else failed.push(file.name);
-            }
-
-            uploadBtn.disabled = false;
-            if (failed.length === 0 && landedFolder) {
-                status.textContent = `All ${filesArray.length} file(s) uploaded. Opening album...`;
-                setTimeout(() => location.href = `/folder/${landedFolder}`, 800);
-            } else {
-                status.textContent = `${failed.length} file(s) failed after ${MAX_RETRIES} attempts: ${failed.join(', ')}.`;
-            }
-        });
-    </script>
+  document.querySelectorAll('.rename-toggle').forEach(btn => {
+    btn.addEventListener('click', () => btn.closest('.album-card').classList.toggle('renaming'));
+  });
+  document.querySelectorAll('.del-form').forEach(form => {
+    const btn = form.querySelector('.del-btn');
+    const label = form.querySelector('.del-label');
+    let armed = false, timer = null;
+    form.addEventListener('submit', e => {
+      if (!armed){
+        e.preventDefault(); armed = true; btn.classList.add('confirm'); label.textContent = 'Sure?';
+        timer = setTimeout(() => { armed = false; btn.classList.remove('confirm'); label.textContent = ''; }, 2500);
+      }
+    });
+  });
+})();
+</script>
 </body>
 </html>
