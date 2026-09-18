@@ -47,6 +47,8 @@
   .storage-value{font-size:13px;color:var(--text-dim);margin-bottom:6px;white-space:nowrap;}
   .storage-block .track{width:150px;height:1px;background:var(--hairline);margin-left:auto;}
   .storage-block .fill{height:100%;background:var(--ink);}
+  .storage-block.warning .eyebrow, .storage-block.warning .storage-value{color:var(--danger);}
+  .storage-block.warning .fill{background:var(--danger);}
 
   .create-row{display:flex;justify-content:flex-end;margin-bottom:8px;}
   .create-form{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;}
@@ -93,6 +95,12 @@
   }
   .folder-input:focus{outline:none;border-bottom-color:var(--ink);}
 
+  .queue-summary{display:none;flex-direction:column;gap:6px;margin-bottom:10px;}
+  .queue-summary.open{display:flex;}
+  .queue-summary .summary-row{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;}
+  .queue-summary .bar{height:3px;background:var(--hairline);}
+  .queue-summary .bar-fill{height:100%;background:var(--ink);transition:width .2s linear;}
+
   .queue{display:flex;flex-direction:column;gap:6px;margin-bottom:28px;max-height:0;overflow:hidden;transition:max-height .3s var(--ease);}
   .queue.open{max-height:700px;overflow-y:auto;}
   .queue-row{display:flex;align-items:center;gap:12px;background:var(--bg-elev);border:1px solid var(--hairline);border-radius:0;padding:10px 14px;}
@@ -104,6 +112,7 @@
   .queue-row .bar-fill{height:100%;background:var(--ink);transition:width .25s linear;}
   .queue-row.failed .bar-fill{background:var(--danger);}
   .queue-row.done .bar-fill{background:var(--success);}
+  .queue-row.cancelled .bar-fill{background:var(--text-faint);}
   .queue-row .status-text{font-size:11px;color:var(--text-faint);white-space:nowrap;text-transform:uppercase;letter-spacing:.03em;}
   .queue-row.failed .status-text{color:var(--danger);}
   .queue-row.done .status-text{color:var(--success);}
@@ -158,8 +167,8 @@
 
 <header class="topbar">
   <div class="brand">Photo Library</div>
-  <div class="storage-block">
-    <div class="eyebrow">[ Storage ]</div>
+  <div class="storage-block{{ ' warning' if storage.percent >= 90 else '' }}">
+    <div class="eyebrow">[ Storage{{ ' — almost full' if storage.percent >= 90 else '' }} ]</div>
     <div class="storage-value">{{ storage.used_gb }} / {{ storage.total_gb }} GB</div>
     <div class="track"><div class="fill" style="width:{{ storage.percent }}%"></div></div>
   </div>
@@ -184,6 +193,7 @@
     </div>
   </form>
 
+  <div class="queue-summary" id="queueSummary"></div>
   <div class="queue" id="queue"></div>
 
   <div class="section-head">
@@ -245,8 +255,10 @@
   const fileInput = document.getElementById('file-input');
   const folderInput = document.getElementById('folder-input');
   const queueEl = document.getElementById('queue');
+  const summaryEl = document.getElementById('queueSummary');
 
   let uploadInProgress = false;
+  let batchCancelled = false;
   window.addEventListener('beforeunload', e => {
     if (uploadInProgress){ e.preventDefault(); e.returnValue = ''; }
   });
@@ -263,49 +275,94 @@
     const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
     return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2,'0')).join('');
   }
-  function uploadOneFile(file, hash, folder, onProgress){
+  function uploadOneFile(item, hash, folder, onProgress){
     return new Promise(resolve => {
       const fd = new FormData();
-      fd.append('file', file); fd.append('file_hash', hash); fd.append('folder', folder);
+      fd.append('file', item.file); fd.append('file_hash', hash); fd.append('folder', folder);
       const xhr = new XMLHttpRequest();
+      item.xhr = xhr;
       xhr.open('POST', '/upload');
       xhr.upload.addEventListener('progress', e => { if (e.lengthComputable) onProgress(Math.round(e.loaded/e.total*100)); });
-      xhr.onload = () => { if (xhr.status === 200){ try{ resolve(JSON.parse(xhr.responseText)); }catch(_){ resolve({status:'error'}); } } else resolve({status:'error'}); };
-      xhr.onerror = () => resolve({status:'error'});
+      xhr.onload = () => {
+        item.xhr = null;
+        let body = {};
+        try{ body = JSON.parse(xhr.responseText); }catch(_){}
+        if (xhr.status === 200) resolve(body);
+        else if (xhr.status === 507) resolve({ status: 'no_space' });
+        else resolve({ status: 'error' });
+      };
+      xhr.onerror = () => { item.xhr = null; resolve({status:'error'}); };
+      xhr.onabort = () => { item.xhr = null; resolve({status:'cancelled'}); };
       xhr.send(fd);
     });
   }
   function renderQueue(items){
     queueEl.classList.toggle('open', items.length > 0);
-    const active = items.filter(i => i.status === 'hashing' || i.status === 'uploading' || i.status === 'retrying');
+    const active = items.filter(i => i.status === 'queued' || i.status === 'hashing' || i.status === 'uploading' || i.status === 'retrying');
     uploadInProgress = active.length > 0;
     document.title = active.length > 0
       ? `Uploading ${items.length - active.length}/${items.length}… — ${ORIGINAL_TITLE}`
       : ORIGINAL_TITLE;
+    renderSummary(items, active.length);
     queueEl.innerHTML = '';
     items.forEach(item => {
       const row = document.createElement('div');
-      row.className = 'queue-row' + (item.status==='failed'?' failed':'') + (item.status==='done'?' done':'');
-      const statusText = { hashing:'Verifying…', uploading:`Uploading… ${item.progress}%`, retrying:`Retrying (attempt ${item.attempt}/${MAX_RETRIES})…`, failed:`Failed after ${MAX_RETRIES} attempts`, done:'Uploaded' }[item.status];
+      row.className = 'queue-row' + (item.status==='failed'?' failed':'') + (item.status==='done'?' done':'') + (item.status==='cancelled'?' cancelled':'');
+      const doneLabel = item.duplicate ? 'Already uploaded' : (item.renamed ? 'Uploaded (renamed to avoid conflict)' : 'Uploaded');
+      const statusText = {
+        queued: 'Queued…',
+        hashing: 'Verifying…',
+        uploading: `Uploading… ${item.progress}%`,
+        retrying: `Retrying (attempt ${item.attempt}/${MAX_RETRIES})…`,
+        failed: item.errorMsg || `Failed after ${MAX_RETRIES} attempts`,
+        cancelled: 'Cancelled',
+        done: doneLabel,
+      }[item.status];
       row.innerHTML = `
         <div class="thumb">${item.ext}</div>
         <div class="meta"><div class="fname">${escapeHtml(item.file.name)}</div>
           <div class="status-line"><div class="bar"><div class="bar-fill" style="width:${item.progress}%"></div></div><div class="status-text">${statusText}</div></div>
         </div>
-        ${item.status==='failed' ? `<button class="retry-btn" data-retry-idx="${item.idx}">Retry</button>` : ''}
+        ${(item.status==='failed' || item.status==='cancelled') ? `<button class="retry-btn" data-retry-idx="${item.idx}">Retry</button>` : ''}
       `;
       queueEl.appendChild(row);
     });
     queueEl.querySelectorAll('[data-retry-idx]').forEach(btn => btn.addEventListener('click', () => retryOne(items, parseInt(btn.dataset.retryIdx,10))));
   }
+  function renderSummary(items, activeCount){
+    if (!items.length){ summaryEl.classList.remove('open'); summaryEl.innerHTML = ''; return; }
+    const failed = items.filter(i => i.status === 'failed').length;
+    const cancelled = items.filter(i => i.status === 'cancelled').length;
+    const finished = items.length - activeCount;
+    const pct = Math.round(finished / items.length * 100);
+    summaryEl.classList.add('open');
+    summaryEl.innerHTML = `
+      <div class="summary-row">
+        <span>${finished}/${items.length} processed${failed ? ` · ${failed} failed` : ''}${cancelled ? ` · ${cancelled} cancelled` : ''}</span>
+        ${activeCount > 0 ? `<button type="button" class="btn-text" id="cancelBatchBtn">Cancel</button>` : ''}
+      </div>
+      <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
+    `;
+    const cancelBtn = document.getElementById('cancelBatchBtn');
+    if (cancelBtn) cancelBtn.addEventListener('click', () => cancelBatch(items));
+  }
+  function cancelBatch(items){
+    batchCancelled = true;
+    items.forEach(item => {
+      if (item.status === 'queued'){ item.status = 'cancelled'; }
+      else if (item.xhr){ item.xhr.abort(); }
+    });
+    renderQueue(items);
+  }
   async function startBatch(files){
     const folder = folderInput.value;
-    const items = files.map((file, idx) => ({ idx, file, attempt:0, progress:0, status:'hashing', ext: file.name.split('.').pop().toUpperCase().slice(0,4) }));
+    batchCancelled = false;
+    const items = files.map((file, idx) => ({ idx, file, attempt:0, progress:0, status:'queued', ext: file.name.split('.').pop().toUpperCase().slice(0,4) }));
     renderQueue(items);
     let landedFolder = null;
     let nextIndex = 0;
     async function worker(){
-      while (nextIndex < items.length){
+      while (!batchCancelled && nextIndex < items.length){
         const item = items[nextIndex++];
         const f = await runItem(item, items, folder);
         if (f) landedFolder = f;
@@ -318,12 +375,22 @@
   }
   async function runItem(item, items, folder){
     try {
+      if (batchCancelled){ item.status = 'cancelled'; renderQueue(items); return null; }
       item.status = 'hashing'; renderQueue(items);
       const hash = await sha256Hex(item.file);
+      if (batchCancelled){ item.status = 'cancelled'; renderQueue(items); return null; }
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++){
+        if (batchCancelled){ item.status = 'cancelled'; renderQueue(items); return null; }
         item.attempt = attempt; item.status = attempt > 1 ? 'retrying' : 'uploading'; item.progress = 0; renderQueue(items);
-        const result = await uploadOneFile(item.file, hash, folder, pct => { item.progress = pct; renderQueue(items); });
-        if (result.status === 'ok'){ item.status='done'; item.progress=100; renderQueue(items); return result.folder; }
+        const result = await uploadOneFile(item, hash, folder, pct => { item.progress = pct; renderQueue(items); });
+        if (result.status === 'ok' || result.status === 'duplicate'){
+          item.status = 'done'; item.progress = 100;
+          item.duplicate = result.status === 'duplicate'; item.renamed = !!result.renamed;
+          renderQueue(items);
+          return result.folder;
+        }
+        if (result.status === 'cancelled'){ item.status = 'cancelled'; renderQueue(items); return null; }
+        if (result.status === 'no_space'){ item.errorMsg = 'Storage full'; item.status = 'failed'; renderQueue(items); return null; }
         if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
       }
     } catch (err) {
@@ -334,6 +401,8 @@
   async function retryOne(items, idx){
     const item = items.find(i => i.idx === idx); if (!item) return;
     const folder = folderInput.value;
+    batchCancelled = false;
+    item.errorMsg = null;
     await runItem(item, items, folder);
   }
   function escapeHtml(s){ return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }

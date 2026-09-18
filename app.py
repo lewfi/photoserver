@@ -1,5 +1,8 @@
+import errno
 import hashlib
+import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -29,6 +32,7 @@ THUMBS_DIR = PHOTOS_DIR / ".thumbnails"
 THUMBS_DIR.mkdir(exist_ok=True)
 
 RAW_EXTENSIONS = {".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2"}
+FOLDER_PAGE_SIZE = 200
 
 app = FastAPI()
 
@@ -93,6 +97,55 @@ def hash_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def hash_index_path(folder_path: Path) -> Path:
+    return folder_path / ".hashes.json"
+
+
+def load_hash_index(folder_path: Path) -> dict:
+    idx_file = hash_index_path(folder_path)
+    if not idx_file.exists():
+        return {}
+    try:
+        return json.loads(idx_file.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_hash_index(folder_path: Path, index: dict):
+    hash_index_path(folder_path).write_text(json.dumps(index))
+
+
+def add_to_hash_index(folder_path: Path, file_hash: str, filename: str):
+    index = load_hash_index(folder_path)
+    index[file_hash] = filename
+    save_hash_index(folder_path, index)
+
+
+def remove_from_hash_index(folder_path: Path, filename: str):
+    index = load_hash_index(folder_path)
+    stale = [h for h, name in index.items() if name == filename]
+    if not stale:
+        return
+    for h in stale:
+        del index[h]
+    save_hash_index(folder_path, index)
+
+
+def move_hash_index_entry(src_folder: Path, dest_folder: Path, old_name: str, new_name: str):
+    src_index = load_hash_index(src_folder)
+    matched = [h for h, name in src_index.items() if name == old_name]
+    if not matched:
+        return
+    for h in matched:
+        del src_index[h]
+    save_hash_index(src_folder, src_index)
+
+    dest_index = load_hash_index(dest_folder)
+    for h in matched:
+        dest_index[h] = new_name
+    save_hash_index(dest_folder, dest_index)
+
+
 templates = Jinja2Templates(directory="templates")
 app.mount("/files", StaticFiles(directory=PHOTOS_DIR), name="files")
 app.mount("/thumbnails", StaticFiles(directory=THUMBS_DIR), name="thumbnails")
@@ -138,6 +191,7 @@ def folder_view(
     folder_name: str,
     sort: str = "date",
     type: str = "all",
+    page: int = 1,
     user: str = Depends(verify_credentials),
 ):
     safe_folder = Path(folder_name).name
@@ -157,15 +211,24 @@ def folder_view(
     else:
         files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
+    total_files = len(files)
+    total_pages = max(1, math.ceil(total_files / FOLDER_PAGE_SIZE))
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * FOLDER_PAGE_SIZE
+    page_files = files[start:start + FOLDER_PAGE_SIZE]
+
     thumb_folder = THUMBS_DIR / safe_folder
     thumbs = {p.name for p in thumb_folder.iterdir() if p.is_file()} if thumb_folder.exists() else set()
 
     return templates.TemplateResponse(request, "folder.html", {
         "folder": safe_folder,
-        "files": [p.name for p in files],
+        "files": [p.name for p in page_files],
         "thumbs": thumbs,
         "sort": sort,
         "type": type,
+        "page": page,
+        "total_pages": total_pages,
+        "total_files": total_files,
         "all_albums": [a for a in list_album_names() if a != safe_folder],
     })
 
@@ -257,6 +320,7 @@ def move_photo(
 
     shutil.move(str(src), str(dest))
     clear_cover_if_matches(PHOTOS_DIR / safe_from, safe_name)
+    move_hash_index_entry(PHOTOS_DIR / safe_from, PHOTOS_DIR / safe_to, safe_name, dest.name)
 
     src_thumb = THUMBS_DIR / safe_from / safe_name
     if src_thumb.exists():
@@ -285,6 +349,7 @@ def bulk_delete(
         if thumb.exists():
             thumb.unlink()
         clear_cover_if_matches(PHOTOS_DIR / safe_folder, safe_name)
+        remove_from_hash_index(PHOTOS_DIR / safe_folder, safe_name)
     return RedirectResponse(url=f"/folder/{safe_folder}", status_code=303)
 
 
@@ -323,6 +388,7 @@ def bulk_move(
 
         shutil.move(str(src), str(dest))
         clear_cover_if_matches(PHOTOS_DIR / safe_from, safe_name)
+        move_hash_index_entry(PHOTOS_DIR / safe_from, dest_folder, safe_name, dest.name)
 
         src_thumb = THUMBS_DIR / safe_from / safe_name
         if src_thumb.exists():
@@ -349,17 +415,28 @@ def upload(
     folder_path = PHOTOS_DIR / safe_folder
     folder_path.mkdir(exist_ok=True)
 
+    # Folder-wide dedupe: catches the same content re-uploaded under a
+    # different filename (e.g. from a second device), not just a retried
+    # upload of the exact same file.
+    hash_index = load_hash_index(folder_path)
+    indexed_name = hash_index.get(file_hash)
+    if indexed_name and (folder_path / indexed_name).is_file():
+        return {"filename": indexed_name, "folder": safe_folder, "status": "duplicate"}
+
     candidate = folder_path / file.filename
     if candidate.is_file() and hash_file(candidate) == file_hash:
-        # Same name, same content already on disk — a retried/re-selected
-        # batch re-uploading a file that already succeeded. Skip the write.
-        return {"filename": candidate.name, "folder": safe_folder, "status": "ok"}
+        # Same name, same content already on disk but not yet in the index
+        # (e.g. uploaded before this feature existed) — backfill it.
+        add_to_hash_index(folder_path, file_hash, candidate.name)
+        return {"filename": candidate.name, "folder": safe_folder, "status": "duplicate"}
 
     dest = candidate
     stem, suffix, counter = dest.stem, dest.suffix, 1
+    renamed = False
     while dest.exists():
         dest = folder_path / f"{stem}_{counter}{suffix}"
         counter += 1
+        renamed = True
 
     hasher = hashlib.sha256()
     try:
@@ -367,9 +444,11 @@ def upload(
             while chunk := file.file.read(1024 * 1024):
                 hasher.update(chunk)
                 f.write(chunk)
-    except Exception:
+    except Exception as e:
         if dest.exists():
             dest.unlink()
+        if isinstance(e, OSError) and e.errno == errno.ENOSPC:
+            raise HTTPException(status_code=507, detail="Storage full")
         raise HTTPException(status_code=500, detail="Upload interrupted")
 
     if hasher.hexdigest() != file_hash:
@@ -377,7 +456,8 @@ def upload(
         return {"filename": file.filename, "folder": safe_folder, "status": "failed"}
 
     generate_thumbnail(dest, THUMBS_DIR / safe_folder)
-    return {"filename": dest.name, "folder": safe_folder, "status": "ok"}
+    add_to_hash_index(folder_path, file_hash, dest.name)
+    return {"filename": dest.name, "folder": safe_folder, "status": "ok", "renamed": renamed}
 
 
 @app.post("/delete")
@@ -396,5 +476,6 @@ def delete(filename: str = Form(...), folder: str = Form(...), user: str = Depen
         thumb.unlink()
 
     clear_cover_if_matches(PHOTOS_DIR / safe_folder, safe_name)
+    remove_from_hash_index(PHOTOS_DIR / safe_folder, safe_name)
 
     return RedirectResponse(url=f"/folder/{safe_folder}", status_code=303)
