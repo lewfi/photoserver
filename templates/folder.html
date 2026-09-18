@@ -83,7 +83,7 @@
   .dropzone input[type="file"]{display:none;}
 
   .queue{display:flex;flex-direction:column;gap:6px;margin-bottom:24px;max-height:0;overflow:hidden;transition:max-height .3s var(--ease);}
-  .queue.open{max-height:700px;}
+  .queue.open{max-height:700px;overflow-y:auto;}
   .queue-row{display:flex;align-items:center;gap:12px;background:var(--bg-elev);border:1px solid var(--hairline);border-radius:0;padding:10px 14px;}
   .queue-row .thumb{width:34px;height:34px;border-radius:0;flex-shrink:0;background:var(--bg-elev-2);display:flex;align-items:center;justify-content:center;font-size:9px;font-family:ui-monospace,"SF Mono",Menlo,monospace;color:var(--text-faint);}
   .queue-row .meta{flex:1;min-width:0;} .queue-row .fname{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
@@ -328,13 +328,17 @@
     if (items.every(i => i.status === 'done')) setTimeout(() => location.reload(), 900);
   }
   async function runItem(item, items){
-    item.status = 'hashing'; renderQueue(items);
-    const hash = await sha256Hex(item.file);
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++){
-      item.attempt = attempt; item.status = attempt > 1 ? 'retrying' : 'uploading'; item.progress = 0; renderQueue(items);
-      const result = await uploadOneFile(item.file, hash, pct => { item.progress = pct; renderQueue(items); });
-      if (result === 'ok'){ item.status='done'; item.progress=100; renderQueue(items); return; }
-      if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+    try {
+      item.status = 'hashing'; renderQueue(items);
+      const hash = await sha256Hex(item.file);
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++){
+        item.attempt = attempt; item.status = attempt > 1 ? 'retrying' : 'uploading'; item.progress = 0; renderQueue(items);
+        const result = await uploadOneFile(item.file, hash, pct => { item.progress = pct; renderQueue(items); });
+        if (result === 'ok'){ item.status='done'; item.progress=100; renderQueue(items); return; }
+        if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+      }
+    } catch (err) {
+      console.error('Upload failed for', item.file.name, err);
     }
     item.status = 'failed'; renderQueue(items);
   }
