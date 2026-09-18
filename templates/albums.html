@@ -238,11 +238,18 @@
   "use strict";
   const MAX_RETRIES = 3;
   const RETRY_DELAY_MS = 2000;
+  const CONCURRENCY = 3;
+  const ORIGINAL_TITLE = document.title;
 
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('file-input');
   const folderInput = document.getElementById('folder-input');
   const queueEl = document.getElementById('queue');
+
+  let uploadInProgress = false;
+  window.addEventListener('beforeunload', e => {
+    if (uploadInProgress){ e.preventDefault(); e.returnValue = ''; }
+  });
 
   dropzone.addEventListener('click', e => { if (e.target !== folderInput) fileInput.click(); });
   dropzone.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target !== folderInput) fileInput.click(); });
@@ -270,6 +277,11 @@
   }
   function renderQueue(items){
     queueEl.classList.toggle('open', items.length > 0);
+    const active = items.filter(i => i.status === 'hashing' || i.status === 'uploading' || i.status === 'retrying');
+    uploadInProgress = active.length > 0;
+    document.title = active.length > 0
+      ? `Uploading ${items.length - active.length}/${items.length}… — ${ORIGINAL_TITLE}`
+      : ORIGINAL_TITLE;
     queueEl.innerHTML = '';
     items.forEach(item => {
       const row = document.createElement('div');
@@ -291,7 +303,15 @@
     const items = files.map((file, idx) => ({ idx, file, attempt:0, progress:0, status:'hashing', ext: file.name.split('.').pop().toUpperCase().slice(0,4) }));
     renderQueue(items);
     let landedFolder = null;
-    for (const item of items){ const f = await runItem(item, items, folder); if (f) landedFolder = f; }
+    let nextIndex = 0;
+    async function worker(){
+      while (nextIndex < items.length){
+        const item = items[nextIndex++];
+        const f = await runItem(item, items, folder);
+        if (f) landedFolder = f;
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, worker));
     if (items.every(i => i.status === 'done') && landedFolder){
       setTimeout(() => location.href = '/folder/' + encodeURIComponent(landedFolder), 900);
     }

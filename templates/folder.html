@@ -273,11 +273,18 @@
   "use strict";
   const MAX_RETRIES = 3;
   const RETRY_DELAY_MS = 2000;
+  const CONCURRENCY = 3;
   const FOLDER = "{{ folder }}";
+  const ORIGINAL_TITLE = document.title;
 
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('file-input');
   const queueEl = document.getElementById('queue');
+
+  let uploadInProgress = false;
+  window.addEventListener('beforeunload', e => {
+    if (uploadInProgress){ e.preventDefault(); e.returnValue = ''; }
+  });
 
   dropzone.addEventListener('click', () => fileInput.click());
   dropzone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') fileInput.click(); });
@@ -305,6 +312,11 @@
   }
   function renderQueue(items){
     queueEl.classList.toggle('open', items.length > 0);
+    const active = items.filter(i => i.status === 'hashing' || i.status === 'uploading' || i.status === 'retrying');
+    uploadInProgress = active.length > 0;
+    document.title = active.length > 0
+      ? `Uploading ${items.length - active.length}/${items.length}… — ${ORIGINAL_TITLE}`
+      : ORIGINAL_TITLE;
     queueEl.innerHTML = '';
     items.forEach(item => {
       const row = document.createElement('div');
@@ -324,7 +336,14 @@
   async function startBatch(files){
     const items = files.map((file, idx) => ({ idx, file, attempt:0, progress:0, status:'hashing', ext: file.name.split('.').pop().toUpperCase().slice(0,4) }));
     renderQueue(items);
-    for (const item of items) await runItem(item, items);
+    let nextIndex = 0;
+    async function worker(){
+      while (nextIndex < items.length){
+        const item = items[nextIndex++];
+        await runItem(item, items);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, worker));
     if (items.every(i => i.status === 'done')) setTimeout(() => location.reload(), 900);
   }
   async function runItem(item, items){

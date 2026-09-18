@@ -85,6 +85,14 @@ def clear_cover_if_matches(folder_path: Path, filename: str):
         cover_file.unlink()
 
 
+def hash_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
 templates = Jinja2Templates(directory="templates")
 app.mount("/files", StaticFiles(directory=PHOTOS_DIR), name="files")
 app.mount("/thumbnails", StaticFiles(directory=THUMBS_DIR), name="thumbnails")
@@ -341,17 +349,28 @@ def upload(
     folder_path = PHOTOS_DIR / safe_folder
     folder_path.mkdir(exist_ok=True)
 
-    dest = folder_path / file.filename
+    candidate = folder_path / file.filename
+    if candidate.is_file() and hash_file(candidate) == file_hash:
+        # Same name, same content already on disk — a retried/re-selected
+        # batch re-uploading a file that already succeeded. Skip the write.
+        return {"filename": candidate.name, "folder": safe_folder, "status": "ok"}
+
+    dest = candidate
     stem, suffix, counter = dest.stem, dest.suffix, 1
     while dest.exists():
         dest = folder_path / f"{stem}_{counter}{suffix}"
         counter += 1
 
     hasher = hashlib.sha256()
-    with open(dest, "wb") as f:
-        while chunk := file.file.read(1024 * 1024):
-            hasher.update(chunk)
-            f.write(chunk)
+    try:
+        with open(dest, "wb") as f:
+            while chunk := file.file.read(1024 * 1024):
+                hasher.update(chunk)
+                f.write(chunk)
+    except Exception:
+        if dest.exists():
+            dest.unlink()
+        raise HTTPException(status_code=500, detail="Upload interrupted")
 
     if hasher.hexdigest() != file_hash:
         dest.unlink()
